@@ -1,4 +1,4 @@
-const VERSION = 'ratevault-v5';
+const VERSION = 'ratevault-v6';
 const SHELL = `${VERSION}-shell`;
 const APP_FILES = [
   './',
@@ -8,8 +8,7 @@ const APP_FILES = [
   './manifest.webmanifest',
   './icons/icon.svg',
   './icons/icon-192.png',
-  './icons/icon-512.png',
-  './BALTRA_SHA_PRICE_LIST.pdf'
+  './icons/icon-512.png'
 ];
 
 self.addEventListener('install', event => {

@@ -1,13 +1,11 @@
 // RateVault — Native-Feel Offline Mobile PWA
-// Complete & Persistent CRUD Functionality using localStorage ('ratevault_items')
-// with Mozilla PDF.js Canvas Rendering
+// Complete & Persistent CRUD with localStorage ('ratevault_items')
+// Multi-Page Native Scrollable PDF.js Viewer with Mobile Pinch-to-Zoom
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 
 const STORAGE_KEY = 'ratevault_items';
-const BALTRA_PDF_PATH = './BALTRA_SHA_PRICE_LIST.pdf';
-const BALTRA_PDF_NAME = 'BALTRA_SHA_PRICE_LIST.pdf';
 
 // -------------------------------------------------------------
 // 1. Persistent Storage Engine (localStorage)
@@ -16,27 +14,23 @@ const BALTRA_PDF_NAME = 'BALTRA_SHA_PRICE_LIST.pdf';
 function getStoredItems() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
-    if (raw === null) {
-      // First-time launch seed: initialize default Baltra SHA price list item once
-      const initialItems = [
-        {
-          id: 'item-baltra-sha-' + Date.now(),
-          type: 'file',
-          name: BALTRA_PDF_NAME,
-          parentId: null,
-          mime: 'application/pdf',
-          size: 2615,
-          tags: ['Baltra', 'SHA', 'Price List', '2026'],
-          favorite: true,
-          filePath: BALTRA_PDF_PATH,
-          createdAt: new Date().toISOString(),
-          updatedAt: new Date().toISOString()
-        }
-      ];
-      saveStoredItems(initialItems);
-      return initialItems;
+    if (!raw) return [];
+    const items = JSON.parse(raw);
+    if (!Array.isArray(items)) return [];
+
+    // Filter out any lingering hardcoded fallback cards
+    const cleaned = items.filter(i =>
+      i &&
+      i.name !== 'BALTRA_SHA_PRICE_LIST.pdf' &&
+      i.id !== 'baltra-sha-price-list' &&
+      !String(i.id).includes('baltra-sha') &&
+      i.filePath !== './BALTRA_SHA_PRICE_LIST.pdf'
+    );
+
+    if (cleaned.length !== items.length) {
+      saveStoredItems(cleaned);
     }
-    return JSON.parse(raw) || [];
+    return cleaned;
   } catch (err) {
     console.error('Error reading localStorage:', err);
     return [];
@@ -119,18 +113,8 @@ const state = {
 };
 
 let activeUpload = null;
-
-// PDF.js State & Zoom Variables
 let currentPdfDoc = null;
-let currentPdfPage = 1;
-let currentPdfScale = 1.0;
-let isPdfRendering = false;
-let pendingPdfPage = null;
-let pdfRenderTask = null;
-
-const MIN_SCALE = 0.5;
-const MAX_SCALE = 3.0;
-const SCALE_STEP = 0.25;
+let activePdfRenderTasks = [];
 
 const els = {
   grid: $('#itemsGrid'),
@@ -176,7 +160,33 @@ function toast(message, error = false) {
 }
 
 // -------------------------------------------------------------
-// 2. Dynamic UI View Function (Reads from localStorage)
+// Dynamic Status Update for Help ('?') Button & Modal
+// -------------------------------------------------------------
+
+function updateHelpButtonStatus() {
+  const files = state.items.filter(i => i.type === 'file');
+  const folderList = state.items.filter(i => i.type === 'folder');
+  const totalBytes = state.items.reduce((sum, i) => sum + (i.size || 0), 0);
+
+  const helpBtn = $('#helpButton');
+  if (helpBtn) {
+    helpBtn.title = `Vault Status: ${files.length} file${files.length === 1 ? '' : 's'}, ${folderList.length} folder${folderList.length === 1 ? '' : 's'} (${formatBytes(totalBytes)}) • Tap for guide`;
+    helpBtn.setAttribute('aria-label', helpBtn.title);
+  }
+
+  const helpStatus = $('#helpVaultStatus');
+  if (helpStatus) {
+    helpStatus.textContent = `${state.items.length} item${state.items.length === 1 ? '' : 's'} in vault`;
+  }
+
+  const helpDetail = $('#helpVaultDetail');
+  if (helpDetail) {
+    helpDetail.textContent = `localStorage: ${files.length} files (${formatBytes(totalBytes)}), ${folderList.length} folders`;
+  }
+}
+
+// -------------------------------------------------------------
+// 2. Dynamic UI View Function (Reads strictly from localStorage)
 // -------------------------------------------------------------
 
 function load() {
@@ -317,6 +327,9 @@ function render() {
 
   $('#uploadFolder').innerHTML = folderOptions(state.folderId);
   $('#editFolder').innerHTML = folderOptions();
+
+  // Dynamically update the '?' button status whenever items render
+  updateHelpButtonStatus();
 }
 
 function openFolder(id) {
@@ -515,7 +528,7 @@ function toggleFavorite(id) {
   render();
 }
 
-// DELETE: Confirmation & Permanent Removal from localStorage
+// DELETE: Confirmation & Permanent Removal from localStorage and DOM
 function askDelete(value) {
   const ids = Array.isArray(value) ? value : [value];
   const chosen = new Set(ids);
@@ -541,6 +554,9 @@ $('#confirmForm').addEventListener('submit', e => {
   e.preventDefault();
   els.confirmDialog.close();
 
+  // Hide any open context menus to prevent ghost elements
+  $$('.card-menu').forEach(m => m.classList.add('hidden'));
+
   let items = getStoredItems();
   const allIdsToRemove = new Set();
 
@@ -548,12 +564,22 @@ $('#confirmForm').addEventListener('submit', e => {
     const target = items.find(i => i.id === rootId);
     if (!target) continue;
     if (target.type === 'folder') {
-      const descendants = descendantIds(items, target.id);
-      descendants.forEach(id => allIdsToRemove.add(id));
+      descendantIds(items, target.id).forEach(id => allIdsToRemove.add(id));
     } else {
       allIdsToRemove.add(target.id);
     }
   }
+
+  if (!allIdsToRemove.size) return;
+
+  // Cleanly remove corresponding DOM elements immediately
+  allIdsToRemove.forEach(id => {
+    const el = document.querySelector(`.item-card[data-id="${id}"]`);
+    if (el && el.parentNode) {
+      el.remove();
+    }
+    state.selected.delete(id);
+  });
 
   const beforeCount = items.length;
   // Instantly filter out targeted items by their unique IDs
@@ -563,12 +589,16 @@ $('#confirmForm').addEventListener('submit', e => {
   // Persist updated array to localStorage immediately
   saveStoredItems(items);
 
-  // Update in-memory state and selections
+  // Update in-memory state and clear delete queue
   state.items = items;
-  allIdsToRemove.forEach(id => state.selected.delete(id));
   state.deleteIds = [];
 
-  // Re-render UI: deleted items disappear permanently and will NOT reappear upon reload
+  // Reset folder view if current folder was deleted
+  if (state.folderId && allIdsToRemove.has(state.folderId)) {
+    state.folderId = null;
+  }
+
+  // Complete clean UI re-render
   render();
 
   if (deletedCount > 0) {
@@ -603,193 +633,104 @@ function bulkDownload() {
 }
 
 // -------------------------------------------------------------
-// Mozilla PDF.js Inline Mobile Rendering & Zoom Controls
+// Native Browser-Like Multi-Page PDF.js Viewer
 // -------------------------------------------------------------
 
-async function renderPdfPage(pageNum) {
-  if (!currentPdfDoc) return;
-  if (isPdfRendering) {
-    pendingPdfPage = pageNum;
-    if (pdfRenderTask) {
-      try { pdfRenderTask.cancel(); } catch {}
+function cancelPdfRendering() {
+  activePdfRenderTasks.forEach(task => {
+    try { task.cancel(); } catch {}
+  });
+  activePdfRenderTasks = [];
+}
+
+async function renderAllPdfPages(pdfDoc) {
+  const container = document.getElementById('pdf-container');
+  if (!container) return;
+
+  cancelPdfRendering();
+  container.innerHTML = '';
+
+  currentPdfDoc = pdfDoc;
+  const numPages = pdfDoc.numPages;
+
+  // Render each page sequentially into the scrollable container
+  for (let pageNum = 1; pageNum <= numPages; pageNum++) {
+    try {
+      const page = await pdfDoc.getPage(pageNum);
+
+      const pageWrapper = document.createElement('div');
+      pageWrapper.className = 'pdf-page-wrapper';
+      pageWrapper.dataset.pageNumber = pageNum;
+
+      const canvas = document.createElement('canvas');
+      canvas.className = 'pdf-page-canvas';
+      pageWrapper.appendChild(canvas);
+      container.appendChild(pageWrapper);
+
+      const ctx = canvas.getContext('2d');
+      const dpr = window.devicePixelRatio || 1;
+      // High-resolution rendering (1.5x) ensures crisp text on Retina / mobile displays
+      const viewport = page.getViewport({ scale: 1.5 });
+
+      canvas.width = Math.floor(viewport.width * dpr);
+      canvas.height = Math.floor(viewport.height * dpr);
+      canvas.style.width = '100%';
+      canvas.style.maxWidth = `${Math.floor(viewport.width)}px`;
+      canvas.style.height = 'auto';
+
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+      const renderTask = page.render({
+        canvasContext: ctx,
+        viewport: viewport
+      });
+      activePdfRenderTasks.push(renderTask);
+
+      await renderTask.promise;
+    } catch (err) {
+      if (err?.name !== 'RenderingCancelledException') {
+        console.error(`Error rendering PDF page ${pageNum}:`, err);
+      }
     }
-    return;
-  }
-  isPdfRendering = true;
-
-  try {
-    const page = await currentPdfDoc.getPage(pageNum);
-    const canvas = document.getElementById('pdf-canvas');
-    if (!canvas) {
-      isPdfRendering = false;
-      return;
-    }
-    const ctx = canvas.getContext('2d');
-
-    // Handle high DPI displays for crisp rendering on mobile devices
-    const dpr = window.devicePixelRatio || 1;
-    const viewport = page.getViewport({ scale: currentPdfScale });
-
-    canvas.width = Math.floor(viewport.width * dpr);
-    canvas.height = Math.floor(viewport.height * dpr);
-    canvas.style.width = `${Math.floor(viewport.width)}px`;
-    canvas.style.height = `${Math.floor(viewport.height)}px`;
-
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
-
-    const renderContext = {
-      canvasContext: ctx,
-      viewport: viewport
-    };
-
-    pdfRenderTask = page.render(renderContext);
-    await pdfRenderTask.promise;
-    isPdfRendering = false;
-
-    // Update UI controls and page status
-    const zoomLevelEl = document.getElementById('pdfZoomLevel');
-    if (zoomLevelEl) zoomLevelEl.textContent = `${Math.round(currentPdfScale * 100)}%`;
-
-    const pageInfoEl = document.getElementById('pdfPageInfo');
-    if (pageInfoEl) pageInfoEl.textContent = `${pageNum} / ${currentPdfDoc.numPages}`;
-
-    const prevBtn = document.getElementById('pdfPrevPage');
-    if (prevBtn) prevBtn.disabled = pageNum <= 1;
-
-    const nextBtn = document.getElementById('pdfNextPage');
-    if (nextBtn) nextBtn.disabled = pageNum >= currentPdfDoc.numPages;
-
-    if (pendingPdfPage !== null) {
-      const next = pendingPdfPage;
-      pendingPdfPage = null;
-      renderPdfPage(next);
-    }
-  } catch (err) {
-    if (err?.name !== 'RenderingCancelledException') {
-      console.error('PDF.js render error:', err);
-    }
-    isPdfRendering = false;
   }
 }
 
-// Zoom in (+) event handler
-function zoomInPdf() {
-  if (!currentPdfDoc || currentPdfScale >= MAX_SCALE) return;
-  currentPdfScale = Math.min(MAX_SCALE, Math.round((currentPdfScale + SCALE_STEP) * 100) / 100);
-  renderPdfPage(currentPdfPage);
-}
-
-// Zoom out (-) event handler
-function zoomOutPdf() {
-  if (!currentPdfDoc || currentPdfScale <= MIN_SCALE) return;
-  currentPdfScale = Math.max(MIN_SCALE, Math.round((currentPdfScale - SCALE_STEP) * 100) / 100);
-  renderPdfPage(currentPdfPage);
-}
-
-async function loadPdfDocument(source) {
-  if (typeof window === 'undefined' || !window.pdfjsLib) {
-    throw new Error('PDF.js library is not loaded');
-  }
-
-  window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
-
-  currentPdfDoc = await window.pdfjsLib.getDocument(source).promise;
-  currentPdfPage = 1;
-
-  // Auto-calculate scale to fit container width cleanly on mobile
-  const firstPage = await currentPdfDoc.getPage(1);
-  const unscaled = firstPage.getViewport({ scale: 1.0 });
-  const container = document.getElementById('pdfContainer') || document.getElementById('previewStage');
-  const availableWidth = container ? container.clientWidth - 32 : window.innerWidth - 32;
-  if (unscaled.width > 0 && availableWidth > 0) {
-    const fitRatio = availableWidth / unscaled.width;
-    currentPdfScale = Math.max(0.6, Math.min(1.5, Math.round(fitRatio * 100) / 100));
-  } else {
-    currentPdfScale = 1.0;
-  }
-
-  await renderPdfPage(currentPdfPage);
-}
-
-// Preview Dialog Opener: Handles images and native PDF.js canvas rendering
+// Preview Dialog: Native multi-page scrollable PDF and dynamic image preview
 async function openPreview(id) {
-  const isBaltraRequest = id === BALTRA_PDF_PATH || id === BALTRA_PDF_NAME;
+  const item = state.items.find(i => i.id === id && i.type === 'file');
+  if (!item) return toast('Document not found', true);
 
-  let item = null;
-  let isPdf = false;
-  let pdfSource = null;
-
-  const pdfControls = $('#pdfControls');
-  const pdfContainer = $('#pdfContainer');
+  const pdfContainer = $('#pdf-container');
   const imagePreview = $('#imagePreview');
+  const isPdf = item.mime === 'application/pdf' || item.name.toLowerCase().endsWith('.pdf');
 
-  if (isBaltraRequest) {
-    isPdf = true;
-    pdfSource = BALTRA_PDF_PATH;
-    $('#previewName').textContent = BALTRA_PDF_NAME;
-    $('#previewMeta').textContent = 'PDF document · Official Price List';
-    $('#previewDownload').onclick = () => {
-      const a = document.createElement('a');
-      a.href = BALTRA_PDF_PATH;
-      a.download = BALTRA_PDF_NAME;
-      document.body.appendChild(a);
-      a.click();
-      a.remove();
-    };
-  } else {
-    item = state.items.find(i => i.id === id && i.type === 'file');
-    if (!item) {
-      if (typeof id === 'string' && id.toLowerCase().endsWith('.pdf')) {
-        isPdf = true;
-        pdfSource = id;
-        const filename = id.split('/').pop();
-        $('#previewName').textContent = filename;
-        $('#previewMeta').textContent = 'PDF document';
-        $('#previewDownload').onclick = () => {
-          const a = document.createElement('a');
-          a.href = id;
-          a.download = filename;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-        };
-      } else {
-        return;
-      }
-    } else {
-      $('#previewName').textContent = item.name;
-      isPdf = item.mime === 'application/pdf' || item.name.toLowerCase().endsWith('.pdf');
-      $('#previewMeta').textContent = `${isPdf ? 'PDF document' : 'Image'} · ${formatBytes(item.size)}`;
-      $('#previewDownload').onclick = () => download(item.id);
-
-      if (isPdf) {
-        if (item.filePath) {
-          pdfSource = item.filePath;
-        } else if (item.dataUrl) {
-          pdfSource = item.dataUrl;
-        } else if (item.name === BALTRA_PDF_NAME || item.name.toLowerCase().includes('baltra')) {
-          pdfSource = BALTRA_PDF_PATH;
-        } else {
-          pdfSource = BALTRA_PDF_PATH;
-        }
-      }
-    }
-  }
+  $('#previewName').textContent = item.name;
+  $('#previewMeta').textContent = `${isPdf ? 'PDF document' : 'Image'} · ${formatBytes(item.size)}`;
+  $('#previewDownload').onclick = () => download(item.id);
 
   if (isPdf) {
     imagePreview.classList.add('hidden');
     pdfContainer.classList.remove('hidden');
-    pdfControls.classList.remove('hidden');
+    pdfContainer.innerHTML = '<div style="color:#b8c3cf;padding:40px;font-size:13px;text-align:center">Loading pages…</div>';
     els.previewDialog.showModal();
 
     try {
-      await loadPdfDocument(pdfSource);
+      if (!window.pdfjsLib) throw new Error('PDF.js library is not loaded');
+      window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+      const source = item.dataUrl || item.filePath;
+      if (!source) throw new Error('No PDF file data available');
+
+      const loadingTask = window.pdfjsLib.getDocument(source);
+      const pdfDoc = await loadingTask.promise;
+      await renderAllPdfPages(pdfDoc);
     } catch (err) {
-      toast('Failed to load PDF preview: ' + err.message, true);
+      pdfContainer.innerHTML = `<div style="color:#ff8e86;padding:40px;font-size:13px;text-align:center"><p>Could not render PDF document</p><small>${escapeHtml(err.message)}</small></div>`;
+      toast(err.message, true);
     }
   } else {
+    // Image Preview
     pdfContainer.classList.add('hidden');
-    pdfControls.classList.add('hidden');
     imagePreview.classList.remove('hidden');
 
     const src = item.dataUrl || item.filePath;
@@ -804,32 +745,25 @@ async function openPreview(id) {
 }
 
 function closePreview() {
-  if (pdfRenderTask) {
-    try { pdfRenderTask.cancel(); } catch {}
-  }
-  isPdfRendering = false;
-  pendingPdfPage = null;
+  cancelPdfRendering();
   currentPdfDoc = null;
-  const canvas = document.getElementById('pdf-canvas');
-  if (canvas) {
-    const ctx = canvas.getContext('2d');
-    ctx.clearRect(0, 0, canvas.width, canvas.height);
-  }
-  if (els.previewDialog.open) {
+  const container = document.getElementById('pdf-container');
+  if (container) container.innerHTML = '';
+  if (els.previewDialog && els.previewDialog.open) {
     els.previewDialog.close();
   }
 }
 
 function download(id) {
   const item = state.items.find(i => i.id === id && i.type === 'file');
-  const href = item?.dataUrl || item?.filePath || (id === BALTRA_PDF_PATH ? BALTRA_PDF_PATH : null);
-  const name = item?.name || (id === BALTRA_PDF_PATH ? BALTRA_PDF_NAME : 'download');
+  if (!item) return toast('File not found', true);
 
-  if (!href) return toast('File not found', true);
+  const href = item.dataUrl || item.filePath;
+  if (!href) return toast('File data not available', true);
 
   const a = document.createElement('a');
   a.href = href;
-  a.download = name;
+  a.download = item.name;
   document.body.appendChild(a);
   a.click();
   a.remove();
@@ -939,7 +873,7 @@ document.addEventListener('click', e => {
   if (bulk === 'download' && state.selected.size) bulkDownload();
 });
 
-// File input and search handlers
+// File picker and search listeners
 $('#uploadWell').addEventListener('click', () => els.filePicker.click());
 els.filePicker.addEventListener('change', () => {
   if (els.filePicker.files.length) {
@@ -969,7 +903,7 @@ document.addEventListener('keydown', e => {
   }
   if (e.key === 'Escape') {
     $('#sidebar').classList.remove('open');
-    if (els.previewDialog.open) closePreview();
+    if (els.previewDialog && els.previewDialog.open) closePreview();
   }
 });
 
@@ -979,27 +913,6 @@ $('#previewClose').addEventListener('click', closePreview);
 els.previewDialog.addEventListener('cancel', e => {
   e.preventDefault();
   closePreview();
-});
-
-// PDF.js Zoom & Page Control Listeners
-$('#pdfZoomIn')?.addEventListener('click', zoomInPdf);
-$('#pdfZoomOut')?.addEventListener('click', zoomOutPdf);
-$('#pdfPrevPage')?.addEventListener('click', () => {
-  if (currentPdfDoc && currentPdfPage > 1) {
-    currentPdfPage--;
-    renderPdfPage(currentPdfPage);
-  }
-});
-$('#pdfNextPage')?.addEventListener('click', () => {
-  if (currentPdfDoc && currentPdfPage < currentPdfDoc.numPages) {
-    currentPdfPage++;
-    renderPdfPage(currentPdfPage);
-  }
-});
-
-// Topbar Baltra Price List quick preview button
-$('#previewBaltraBtn')?.addEventListener('click', () => {
-  openPreview(BALTRA_PDF_PATH);
 });
 
 $('#sidebarBackdrop').addEventListener('click', () => $('#sidebar').classList.remove('open'));
@@ -1068,5 +981,5 @@ if ('serviceWorker' in navigator && !window.Capacitor?.isNativePlatform?.()) {
   });
 }
 
-// Initial load: reads directly from localStorage and renders item cards dynamically
+// Initial load: strictly reads from localStorage and dynamically renders cards
 load();
