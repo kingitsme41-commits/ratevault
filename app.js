@@ -1,123 +1,62 @@
 // RateVault — Native-Feel Offline Mobile PWA
-// 100% Client-Side Local Storage (IndexedDB) with Mozilla PDF.js Canvas Rendering
+// Complete & Persistent CRUD Functionality using localStorage ('ratevault_items')
+// with Mozilla PDF.js Canvas Rendering
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
 
-const DB_NAME = 'RateVaultDB';
-const DB_VERSION = 1;
-let dbInstance = null;
-
-// Object URL cache to prevent memory leaks and ensure snappy thumbnail loads
-const blobUrlCache = new Map();
-
-function revokeThumbnailUrl(id) {
-  if (blobUrlCache.has(id)) {
-    try { URL.revokeObjectURL(blobUrlCache.get(id)); } catch {}
-    blobUrlCache.delete(id);
-  }
-}
-
-// PDF.js State & Constants
+const STORAGE_KEY = 'ratevault_items';
 const BALTRA_PDF_PATH = './BALTRA_SHA_PRICE_LIST.pdf';
 const BALTRA_PDF_NAME = 'BALTRA_SHA_PRICE_LIST.pdf';
 
-let currentPdfDoc = null;
-let currentPdfPage = 1;
-let currentPdfScale = 1.0;
-let isPdfRendering = false;
-let pendingPdfPage = null;
-let pdfRenderTask = null;
+// -------------------------------------------------------------
+// 1. Persistent Storage Engine (localStorage)
+// -------------------------------------------------------------
 
-const MIN_SCALE = 0.5;
-const MAX_SCALE = 3.0;
-const SCALE_STEP = 0.25;
-
-// IndexedDB Helper Functions
-function getDB() {
-  if (dbInstance) return Promise.resolve(dbInstance);
-  return new Promise((resolve, reject) => {
-    const request = indexedDB.open(DB_NAME, DB_VERSION);
-    request.onupgradeneeded = event => {
-      const db = request.result;
-      if (!db.objectStoreNames.contains('items')) {
-        const itemStore = db.createObjectStore('items', { keyPath: 'id' });
-        itemStore.createIndex('parentId', 'parentId', { unique: false });
-        itemStore.createIndex('type', 'type', { unique: false });
-        itemStore.createIndex('favorite', 'favorite', { unique: false });
-        itemStore.createIndex('updatedAt', 'updatedAt', { unique: false });
-      }
-      if (!db.objectStoreNames.contains('files')) {
-        db.createObjectStore('files', { keyPath: 'id' });
-      }
-    };
-    request.onsuccess = () => {
-      dbInstance = request.result;
-      dbInstance.onversionchange = () => {
-        if (dbInstance) {
-          dbInstance.close();
-          dbInstance = null;
+function getStoredItems() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw === null) {
+      // First-time launch seed: initialize default Baltra SHA price list item once
+      const initialItems = [
+        {
+          id: 'item-baltra-sha-' + Date.now(),
+          type: 'file',
+          name: BALTRA_PDF_NAME,
+          parentId: null,
+          mime: 'application/pdf',
+          size: 2615,
+          tags: ['Baltra', 'SHA', 'Price List', '2026'],
+          favorite: true,
+          filePath: BALTRA_PDF_PATH,
+          createdAt: new Date().toISOString(),
+          updatedAt: new Date().toISOString()
         }
-      };
-      resolve(dbInstance);
-    };
-    request.onerror = () => reject(request.error);
-  });
+      ];
+      saveStoredItems(initialItems);
+      return initialItems;
+    }
+    return JSON.parse(raw) || [];
+  } catch (err) {
+    console.error('Error reading localStorage:', err);
+    return [];
+  }
 }
 
-async function dbGetAll(storeName) {
-  const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readonly');
-    const store = tx.objectStore(storeName);
-    const req = store.getAll();
-    req.onsuccess = () => resolve(req.result || []);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function dbGet(storeName, key) {
-  const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readonly');
-    const store = tx.objectStore(storeName);
-    const req = store.get(key);
-    req.onsuccess = () => resolve(req.result || null);
-    req.onerror = () => reject(req.error);
-  });
-}
-
-async function dbPut(storeName, val) {
-  const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readwrite');
-    const store = tx.objectStore(storeName);
-    store.put(val);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
-}
-
-async function dbDelete(storeName, key) {
-  const db = await getDB();
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction(storeName, 'readwrite');
-    const store = tx.objectStore(storeName);
-    store.delete(key);
-    tx.oncomplete = () => resolve();
-    tx.onerror = () => reject(tx.error);
-  });
+function saveStoredItems(items) {
+  try {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(items));
+  } catch (err) {
+    console.error('Error writing to localStorage:', err);
+    toast('Storage full or error saving data', true);
+  }
 }
 
 function generateId() {
   if (typeof crypto !== 'undefined' && crypto.randomUUID) {
     return crypto.randomUUID();
   }
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
-    const r = (Math.random() * 16) | 0;
-    const v = c === 'x' ? r : (r & 0x3) | 0x8;
-    return v.toString(16);
-  });
+  return 'item-' + Date.now() + '-' + Math.random().toString(36).substring(2, 9);
 }
 
 const cleanName = (value, fallback = 'Untitled') => {
@@ -153,7 +92,19 @@ function descendantIds(items, folderId) {
   return ids;
 }
 
+function readFileAsDataUrl(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result);
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(file);
+  });
+}
+
+// -------------------------------------------------------------
 // App State
+// -------------------------------------------------------------
+
 const state = {
   items: [],
   folderId: null,
@@ -168,6 +119,18 @@ const state = {
 };
 
 let activeUpload = null;
+
+// PDF.js State & Zoom Variables
+let currentPdfDoc = null;
+let currentPdfPage = 1;
+let currentPdfScale = 1.0;
+let isPdfRendering = false;
+let pendingPdfPage = null;
+let pdfRenderTask = null;
+
+const MIN_SCALE = 0.5;
+const MAX_SCALE = 3.0;
+const SCALE_STEP = 0.25;
 
 const els = {
   grid: $('#itemsGrid'),
@@ -212,47 +175,13 @@ function toast(message, error = false) {
   setTimeout(() => el.remove(), 3200);
 }
 
-// Ensure Baltra SHA Price List item is seeded into the library
-async function ensureBaltraPriceList() {
-  const existing = state.items.find(i => i.name === BALTRA_PDF_NAME || i.id === 'baltra-sha-price-list');
-  if (!existing) {
-    const item = {
-      id: 'baltra-sha-price-list',
-      type: 'file',
-      name: BALTRA_PDF_NAME,
-      parentId: null,
-      mime: 'application/pdf',
-      size: 2615,
-      tags: ['Baltra', 'SHA', 'Price List', '2026'],
-      favorite: true,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    };
-    try {
-      await dbPut('items', item);
-      state.items.unshift(item);
-    } catch {}
-  }
-}
+// -------------------------------------------------------------
+// 2. Dynamic UI View Function (Reads from localStorage)
+// -------------------------------------------------------------
 
-// Load metadata from IndexedDB
-async function load() {
-  try {
-    const items = await dbGetAll('items');
-    state.items = items || [];
-    await ensureBaltraPriceList();
-    localStorage.setItem('rv-metadata', JSON.stringify(state.items));
-    render();
-  } catch (e) {
-    try {
-      state.items = JSON.parse(localStorage.getItem('rv-metadata') || '[]');
-      await ensureBaltraPriceList();
-      render();
-      toast('Showing your cached view');
-    } catch {
-      toast(e.message, true);
-    }
-  }
+function load() {
+  state.items = getStoredItems();
+  render();
 }
 
 function folderPath(id) {
@@ -317,11 +246,11 @@ function renderTree() {
 
 function card(item, index) {
   const selected = state.selected.has(item.id);
-  const cachedUrl = blobUrlCache.get(item.id);
+  const imageSrc = item.dataUrl || item.filePath || '';
   const thumb = item.type === 'folder'
     ? `<div class="folder-thumb" data-open="${item.id}"><div class="folder-shape ${item.color}"><b>${childrenOf(item.id).length}</b></div></div>`
     : `<div class="thumb" data-preview="${item.id}">${isImage(item)
-        ? `<img data-thumb-id="${item.id}" src="${cachedUrl || 'data:image/svg+xml;charset=utf-8,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20viewBox%3D%220%200%201%201%22%2F%3E'}" alt="${escapeHtml(item.name)}">`
+        ? `<img src="${imageSrc}" alt="${escapeHtml(item.name)}">`
         : '<div class="pdf-sheet">PDF</div>'}</div>`;
   const meta = item.type === 'folder' ? `${childrenOf(item.id).length} items` : `${item.mime === 'application/pdf' || item.name.toLowerCase().endsWith('.pdf') ? 'PDF' : 'IMAGE'} · ${formatBytes(item.size)}`;
 
@@ -342,25 +271,6 @@ function card(item, index) {
       <button class="danger-text" data-delete="${item.id}">Delete</button>
     </div>
   </article>`;
-}
-
-async function loadThumbnails() {
-  const images = $$('img[data-thumb-id]');
-  for (const img of images) {
-    const id = img.dataset.thumbId;
-    if (blobUrlCache.has(id)) {
-      if (img.src !== blobUrlCache.get(id)) img.src = blobUrlCache.get(id);
-      continue;
-    }
-    try {
-      const fileRecord = await dbGet('files', id);
-      if (fileRecord && fileRecord.blob) {
-        const url = URL.createObjectURL(fileRecord.blob);
-        blobUrlCache.set(id, url);
-        img.src = url;
-      }
-    } catch {}
-  }
 }
 
 function render() {
@@ -407,8 +317,6 @@ function render() {
 
   $('#uploadFolder').innerHTML = folderOptions(state.folderId);
   $('#editFolder').innerHTML = folderOptions();
-
-  loadThumbnails();
 }
 
 function openFolder(id) {
@@ -456,6 +364,242 @@ function openEdit(id) {
   $('#editTagsWrap').classList.toggle('hidden', item.type !== 'file');
   $('#editTags').value = (item.tags || []).join(', ');
   els.editDialog.showModal();
+}
+
+// -------------------------------------------------------------
+// 3. Complete CRUD Operations (localStorage Backend)
+// -------------------------------------------------------------
+
+// CREATE: Add Folder
+$('#folderForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const rawName = $('#folderName').value.trim();
+  if (!rawName) return;
+
+  const parentId = state.folderId || null;
+  const name = uniqueName(state.items, cleanName(rawName, 'New folder'), parentId, 'folder');
+  const color = new FormData(e.target).get('folderColor') || 'amber';
+
+  const newFolder = {
+    id: generateId(),
+    type: 'folder',
+    name,
+    parentId,
+    color,
+    favorite: false,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString()
+  };
+
+  const items = getStoredItems();
+  items.push(newFolder);
+  saveStoredItems(items);
+
+  state.items = items;
+  els.folderDialog.close();
+  toast('Folder created');
+  render();
+});
+
+// CREATE: Upload Files
+$('#uploadForm').addEventListener('submit', async e => {
+  e.preventDefault();
+  if (!state.uploadFiles.length) return toast('Choose at least one file', true);
+
+  const button = $('#uploadSubmit');
+  const cancel = $('#cancelUpload');
+  button.disabled = true;
+  button.textContent = 'Saving…';
+  cancel.textContent = 'Cancel';
+
+  const folderId = $('#uploadFolder').value || null;
+  const tags = $('#uploadTags').value.split(',').map(t => t.trim()).filter(Boolean);
+  let added = 0;
+  const uploadToken = { cancelled: false };
+  activeUpload = uploadToken;
+
+  const items = getStoredItems();
+
+  try {
+    for (let i = 0; i < state.uploadFiles.length; i++) {
+      if (uploadToken.cancelled) break;
+      const file = state.uploadFiles[i];
+      button.textContent = `Saving ${i + 1}/${state.uploadFiles.length}…`;
+
+      const id = generateId();
+      const mime = file.type || (file.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
+      const name = uniqueName(items, cleanName(file.name, 'File'), folderId, 'file');
+      const dataUrl = await readFileAsDataUrl(file);
+
+      const newItem = {
+        id,
+        type: 'file',
+        name,
+        parentId: folderId,
+        mime,
+        size: file.size,
+        tags: [...new Set(tags)].slice(0, 8),
+        favorite: false,
+        dataUrl,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString()
+      };
+
+      items.push(newItem);
+      added++;
+    }
+
+    saveStoredItems(items);
+    state.items = items;
+
+    els.uploadDialog.close();
+    toast(`${added} file${added === 1 ? '' : 's'} added to vault`);
+    state.uploadFiles = [];
+    $('#uploadTags').value = '';
+    render();
+  } catch (err) {
+    toast(uploadToken.cancelled ? 'Upload cancelled.' : err.message, !uploadToken.cancelled);
+    render();
+  } finally {
+    if (activeUpload === uploadToken) activeUpload = null;
+    button.disabled = false;
+    button.textContent = 'Save to vault';
+    cancel.textContent = 'Cancel';
+  }
+});
+
+// UPDATE: Edit Item
+$('#editForm').addEventListener('submit', e => {
+  e.preventDefault();
+  const id = state.editId;
+  const items = getStoredItems();
+  const item = items.find(i => i.id === id);
+  if (!item) return;
+
+  const newName = $('#editName').value;
+  const newParentId = $('#editFolder').value || null;
+
+  if (newParentId && !items.some(i => i.id === newParentId && i.type === 'folder')) {
+    return toast('Destination folder not found', true);
+  }
+  if (item.type === 'folder' && newParentId && descendantIds(items, item.id).has(newParentId)) {
+    return toast('A folder cannot be moved inside itself', true);
+  }
+
+  item.parentId = newParentId;
+  item.name = uniqueName(items, cleanName(newName, item.name), item.parentId, item.type, item.id);
+  if (item.type === 'file') {
+    item.tags = $('#editTags').value.split(',').map(t => t.trim()).filter(Boolean).slice(0, 8);
+  }
+  item.updatedAt = new Date().toISOString();
+
+  saveStoredItems(items);
+  state.items = items;
+  els.editDialog.close();
+  toast('Changes saved');
+  render();
+});
+
+// UPDATE: Favorite Toggle
+function toggleFavorite(id) {
+  const items = getStoredItems();
+  const item = items.find(i => i.id === id);
+  if (!item) return;
+
+  item.favorite = !item.favorite;
+  item.updatedAt = new Date().toISOString();
+
+  saveStoredItems(items);
+  state.items = items;
+  toast(item.favorite ? 'Added to favorites' : 'Removed from favorites');
+  render();
+}
+
+// DELETE: Confirmation & Permanent Removal from localStorage
+function askDelete(value) {
+  const ids = Array.isArray(value) ? value : [value];
+  const chosen = new Set(ids);
+  state.deleteIds = ids.filter(id => {
+    let item = state.items.find(i => i.id === id);
+    while (item?.parentId) {
+      if (chosen.has(item.parentId)) return false;
+      item = state.items.find(i => i.id === item.parentId);
+    }
+    return true;
+  });
+  const items = state.items.filter(i => state.deleteIds.includes(i.id));
+  if (!items.length) return;
+  $('#confirmText').textContent = items.length === 1
+    ? items[0].type === 'folder'
+      ? `“${items[0].name}” and everything inside it will be permanently deleted from local storage.`
+      : `“${items[0].name}” will be permanently deleted from local storage.`
+    : `${items.length} selected items will be permanently deleted from local storage.`;
+  els.confirmDialog.showModal();
+}
+
+$('#confirmForm').addEventListener('submit', e => {
+  e.preventDefault();
+  els.confirmDialog.close();
+
+  let items = getStoredItems();
+  const allIdsToRemove = new Set();
+
+  for (const rootId of state.deleteIds) {
+    const target = items.find(i => i.id === rootId);
+    if (!target) continue;
+    if (target.type === 'folder') {
+      const descendants = descendantIds(items, target.id);
+      descendants.forEach(id => allIdsToRemove.add(id));
+    } else {
+      allIdsToRemove.add(target.id);
+    }
+  }
+
+  const beforeCount = items.length;
+  // Instantly filter out targeted items by their unique IDs
+  items = items.filter(i => !allIdsToRemove.has(i.id));
+  const deletedCount = beforeCount - items.length;
+
+  // Persist updated array to localStorage immediately
+  saveStoredItems(items);
+
+  // Update in-memory state and selections
+  state.items = items;
+  allIdsToRemove.forEach(id => state.selected.delete(id));
+  state.deleteIds = [];
+
+  // Re-render UI: deleted items disappear permanently and will NOT reappear upon reload
+  render();
+
+  if (deletedCount > 0) {
+    toast(`${deletedCount} item${deletedCount === 1 ? '' : 's'} deleted permanently`);
+  }
+});
+
+// Bulk Actions
+async function bulkFavorite() {
+  const ids = new Set(state.selected);
+  const items = getStoredItems();
+  let count = 0;
+  items.forEach(item => {
+    if (ids.has(item.id)) {
+      item.favorite = true;
+      item.updatedAt = new Date().toISOString();
+      count++;
+    }
+  });
+  saveStoredItems(items);
+  state.items = items;
+  state.selected.clear();
+  toast(`${count} items added to favorites`);
+  render();
+}
+
+function bulkDownload() {
+  const files = state.items.filter(i => state.selected.has(i.id) && i.type === 'file');
+  if (!files.length) return toast('Select at least one file to download', true);
+  files.forEach((file, index) => setTimeout(() => download(file.id), index * 180));
+  toast(`Downloading ${files.length} file${files.length === 1 ? '' : 's'}`);
 }
 
 // -------------------------------------------------------------
@@ -547,22 +691,9 @@ async function loadPdfDocument(source) {
     throw new Error('PDF.js library is not loaded');
   }
 
-  // Configure worker
   window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 
-  let loadingTask;
-  if (typeof source === 'string') {
-    loadingTask = window.pdfjsLib.getDocument(source);
-  } else if (source instanceof Blob) {
-    const arrayBuffer = await source.arrayBuffer();
-    loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer });
-  } else if (source instanceof ArrayBuffer) {
-    loadingTask = window.pdfjsLib.getDocument({ data: source });
-  } else {
-    loadingTask = window.pdfjsLib.getDocument(source);
-  }
-
-  currentPdfDoc = await loadingTask.promise;
+  currentPdfDoc = await window.pdfjsLib.getDocument(source).promise;
   currentPdfPage = 1;
 
   // Auto-calculate scale to fit container width cleanly on mobile
@@ -582,7 +713,7 @@ async function loadPdfDocument(source) {
 
 // Preview Dialog Opener: Handles images and native PDF.js canvas rendering
 async function openPreview(id) {
-  const isBaltraRequest = !id || id === BALTRA_PDF_PATH || id === BALTRA_PDF_NAME || id === 'baltra-sha-price-list';
+  const isBaltraRequest = id === BALTRA_PDF_PATH || id === BALTRA_PDF_NAME;
 
   let item = null;
   let isPdf = false;
@@ -632,15 +763,14 @@ async function openPreview(id) {
       $('#previewDownload').onclick = () => download(item.id);
 
       if (isPdf) {
-        if (item.name === BALTRA_PDF_NAME || item.name.toLowerCase().includes('baltra')) {
+        if (item.filePath) {
+          pdfSource = item.filePath;
+        } else if (item.dataUrl) {
+          pdfSource = item.dataUrl;
+        } else if (item.name === BALTRA_PDF_NAME || item.name.toLowerCase().includes('baltra')) {
           pdfSource = BALTRA_PDF_PATH;
         } else {
-          const fileRecord = await dbGet('files', item.id);
-          if (fileRecord?.blob) {
-            pdfSource = fileRecord.blob;
-          } else {
-            pdfSource = blobUrlCache.get(item.id) || BALTRA_PDF_PATH;
-          }
+          pdfSource = BALTRA_PDF_PATH;
         }
       }
     }
@@ -662,19 +792,12 @@ async function openPreview(id) {
     pdfControls.classList.add('hidden');
     imagePreview.classList.remove('hidden');
 
-    let url = blobUrlCache.get(item.id);
-    if (!url) {
-      const fileRecord = await dbGet('files', item.id);
-      if (fileRecord && fileRecord.blob) {
-        url = URL.createObjectURL(fileRecord.blob);
-        blobUrlCache.set(item.id, url);
-      }
-    }
-    if (!url) {
+    const src = item.dataUrl || item.filePath;
+    if (!src) {
       toast('Could not load image preview', true);
       return;
     }
-    imagePreview.src = url;
+    imagePreview.src = src;
     imagePreview.alt = item.name;
     els.previewDialog.showModal();
   }
@@ -697,105 +820,19 @@ function closePreview() {
   }
 }
 
-async function download(id) {
-  if (id === 'baltra-sha-price-list' || id === BALTRA_PDF_NAME || id === BALTRA_PDF_PATH) {
-    const a = document.createElement('a');
-    a.href = BALTRA_PDF_PATH;
-    a.download = BALTRA_PDF_NAME;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    return;
-  }
-
+function download(id) {
   const item = state.items.find(i => i.id === id && i.type === 'file');
-  if (!item) return;
+  const href = item?.dataUrl || item?.filePath || (id === BALTRA_PDF_PATH ? BALTRA_PDF_PATH : null);
+  const name = item?.name || (id === BALTRA_PDF_PATH ? BALTRA_PDF_NAME : 'download');
 
-  if (item.name === BALTRA_PDF_NAME || item.name.toLowerCase().includes('baltra')) {
-    const a = document.createElement('a');
-    a.href = BALTRA_PDF_PATH;
-    a.download = BALTRA_PDF_NAME;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    return;
-  }
-
-  let url = blobUrlCache.get(id);
-  if (!url) {
-    const fileRecord = await dbGet('files', id);
-    if (fileRecord && fileRecord.blob) {
-      url = URL.createObjectURL(fileRecord.blob);
-      blobUrlCache.set(id, url);
-    }
-  }
-  if (!url) return toast('File not found', true);
+  if (!href) return toast('File not found', true);
 
   const a = document.createElement('a');
-  a.href = url;
-  a.download = item.name;
+  a.href = href;
+  a.download = name;
   document.body.appendChild(a);
   a.click();
   a.remove();
-}
-
-async function patchItem(id, updates, successMessage) {
-  try {
-    const item = state.items.find(i => i.id === id);
-    if (!item) throw new Error('Item not found');
-
-    if (Object.hasOwn(updates, 'parentId')) {
-      const parentId = updates.parentId || null;
-      if (parentId && !state.items.some(i => i.id === parentId && i.type === 'folder')) {
-        throw new Error('Destination folder not found');
-      }
-      if (item.type === 'folder' && parentId && descendantIds(state.items, item.id).has(parentId)) {
-        throw new Error('A folder cannot be moved inside itself');
-      }
-      item.parentId = parentId;
-    }
-
-    if (Object.hasOwn(updates, 'name')) {
-      item.name = uniqueName(state.items, cleanName(updates.name, item.name), item.parentId, item.type, item.id);
-    }
-    if (Object.hasOwn(updates, 'favorite')) {
-      item.favorite = Boolean(updates.favorite);
-    }
-    if (Object.hasOwn(updates, 'tags') && item.type === 'file') {
-      item.tags = [...new Set((updates.tags || []).map(t => String(t).trim()).filter(Boolean))].slice(0, 8);
-    }
-    if (Object.hasOwn(updates, 'color') && item.type === 'folder') {
-      item.color = ['amber','coral','blue','green'].includes(updates.color) ? updates.color : 'amber';
-    }
-    item.updatedAt = new Date().toISOString();
-
-    await dbPut('items', item);
-    if (successMessage) toast(successMessage);
-    await load();
-  } catch (e) {
-    toast(e.message, true);
-  }
-}
-
-function askDelete(value) {
-  const ids = Array.isArray(value) ? value : [value];
-  const chosen = new Set(ids);
-  state.deleteIds = ids.filter(id => {
-    let item = state.items.find(i => i.id === id);
-    while (item?.parentId) {
-      if (chosen.has(item.parentId)) return false;
-      item = state.items.find(i => i.id === item.parentId);
-    }
-    return true;
-  });
-  const items = state.items.filter(i => state.deleteIds.includes(i.id));
-  if (!items.length) return;
-  $('#confirmText').textContent = items.length === 1
-    ? items[0].type === 'folder'
-      ? `“${items[0].name}” and everything inside it will be deleted. This cannot be undone.`
-      : `“${items[0].name}” will be permanently deleted. This cannot be undone.`
-    : `${items.length} selected items will be permanently deleted, including anything inside selected folders. This cannot be undone.`;
-  els.confirmDialog.showModal();
 }
 
 function cancelUploadDialog() {
@@ -809,7 +846,10 @@ function cancelUploadDialog() {
   if (els.uploadDialog.open) els.uploadDialog.close();
 }
 
-// Global click event delegation
+// -------------------------------------------------------------
+// Global Click Event Delegation
+// -------------------------------------------------------------
+
 document.addEventListener('click', e => {
   const closeId = e.target.closest('[data-close]')?.dataset.close;
   if (closeId) {
@@ -859,10 +899,7 @@ document.addEventListener('click', e => {
   if (dl) download(dl);
 
   const fav = e.target.closest('[data-favorite]')?.dataset.favorite;
-  if (fav) {
-    const item = state.items.find(i => i.id === fav);
-    if (item) patchItem(fav, { favorite: !item.favorite }, item.favorite ? 'Removed from favorites' : 'Added to favorites');
-  }
+  if (fav) toggleFavorite(fav);
 
   const select = e.target.closest('[data-select]')?.dataset.select;
   if (select) {
@@ -902,187 +939,7 @@ document.addEventListener('click', e => {
   if (bulk === 'download' && state.selected.size) bulkDownload();
 });
 
-async function bulkFavorite() {
-  const ids = [...state.selected];
-  try {
-    for (const id of ids) {
-      const item = state.items.find(i => i.id === id);
-      if (item) {
-        item.favorite = true;
-        item.updatedAt = new Date().toISOString();
-        await dbPut('items', item);
-      }
-    }
-    toast(`${ids.length} items added to favorites`);
-    state.selected.clear();
-    await load();
-  } catch (error) {
-    toast(error.message, true);
-  }
-}
-
-function bulkDownload() {
-  const files = state.items.filter(i => state.selected.has(i.id) && i.type === 'file');
-  if (!files.length) return toast('Select at least one file to download', true);
-  files.forEach((file, index) => setTimeout(() => download(file.id), index * 180));
-  toast(`Downloading ${files.length} file${files.length === 1 ? '' : 's'}`);
-}
-
-// Folder Form Submission
-$('#folderForm').addEventListener('submit', async e => {
-  e.preventDefault();
-  const rawName = $('#folderName').value.trim();
-  if (!rawName) return;
-
-  const parentId = state.folderId || null;
-  const name = uniqueName(state.items, cleanName(rawName, 'New folder'), parentId, 'folder');
-  const color = new FormData(e.target).get('folderColor') || 'amber';
-
-  const item = {
-    id: generateId(),
-    type: 'folder',
-    name,
-    parentId,
-    color,
-    favorite: false,
-    createdAt: new Date().toISOString(),
-    updatedAt: new Date().toISOString()
-  };
-
-  try {
-    await dbPut('items', item);
-    els.folderDialog.close();
-    toast('Folder created');
-    await load();
-  } catch (err) {
-    toast(err.message, true);
-  }
-});
-
-// Edit Form Submission
-$('#editForm').addEventListener('submit', async e => {
-  e.preventDefault();
-  const item = state.items.find(i => i.id === state.editId);
-  if (!item) return;
-
-  const updates = {
-    name: $('#editName').value,
-    parentId: $('#editFolder').value || null
-  };
-  if (item.type === 'file') {
-    updates.tags = $('#editTags').value.split(',').map(t => t.trim()).filter(Boolean);
-  }
-  els.editDialog.close();
-  await patchItem(item.id, updates, 'Changes saved');
-});
-
-// Confirm Delete
-$('#confirmForm').addEventListener('submit', async e => {
-  e.preventDefault();
-  els.confirmDialog.close();
-  const roots = [...state.deleteIds];
-  let deletedCount = 0;
-
-  try {
-    for (const rootId of roots) {
-      const item = state.items.find(i => i.id === rootId);
-      if (!item) continue;
-
-      const allIds = item.type === 'folder'
-        ? descendantIds(state.items, item.id)
-        : new Set([item.id]);
-
-      for (const id of allIds) {
-        const target = state.items.find(i => i.id === id);
-        if (target && target.type === 'file') {
-          await dbDelete('files', id);
-          revokeThumbnailUrl(id);
-        }
-        await dbDelete('items', id);
-        state.selected.delete(id);
-        deletedCount++;
-      }
-    }
-    state.deleteIds = [];
-    if (deletedCount) toast(`${deletedCount} item${deletedCount === 1 ? '' : 's'} deleted`);
-    await load();
-  } catch (err) {
-    toast(err.message, true);
-    await load();
-  }
-});
-
-// Upload Form Submission (Saving binary files directly to local IndexedDB)
-$('#uploadForm').addEventListener('submit', async e => {
-  e.preventDefault();
-  if (!state.uploadFiles.length) return toast('Choose at least one file', true);
-
-  const button = $('#uploadSubmit');
-  const cancel = $('#cancelUpload');
-  button.disabled = true;
-  button.textContent = 'Saving…';
-  cancel.textContent = 'Cancel';
-
-  const folderId = $('#uploadFolder').value || null;
-  const tags = $('#uploadTags').value.split(',').map(t => t.trim()).filter(Boolean);
-  let added = 0;
-  const uploadToken = { cancelled: false, addedIds: [] };
-  activeUpload = uploadToken;
-
-  try {
-    for (let i = 0; i < state.uploadFiles.length; i++) {
-      if (uploadToken.cancelled) break;
-      const file = state.uploadFiles[i];
-      button.textContent = `Saving ${i + 1}/${state.uploadFiles.length}…`;
-
-      const id = generateId();
-      const mime = file.type || (file.name.toLowerCase().endsWith('.pdf') ? 'application/pdf' : 'image/jpeg');
-      const name = uniqueName(state.items, cleanName(file.name, 'File'), folderId, 'file');
-
-      const item = {
-        id,
-        type: 'file',
-        name,
-        parentId: folderId,
-        mime,
-        size: file.size,
-        tags: [...new Set(tags)].slice(0, 8),
-        favorite: false,
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      };
-
-      // Store binary blob in local 'files' store and metadata in 'items' store
-      await dbPut('files', { id, blob: file, mime, name, size: file.size, updatedAt: item.updatedAt });
-      await dbPut('items', item);
-      state.items.push(item);
-      uploadToken.addedIds.push(id);
-      added++;
-    }
-
-    els.uploadDialog.close();
-    toast(`${added} file${added === 1 ? '' : 's'} added to vault`);
-    state.uploadFiles = [];
-    $('#uploadTags').value = '';
-    await load();
-  } catch (err) {
-    if (uploadToken.addedIds.length) {
-      for (const id of uploadToken.addedIds) {
-        await dbDelete('files', id);
-        await dbDelete('items', id);
-        revokeThumbnailUrl(id);
-      }
-    }
-    toast(uploadToken.cancelled ? 'Upload cancelled.' : err.message, !uploadToken.cancelled);
-    await load();
-  } finally {
-    if (activeUpload === uploadToken) activeUpload = null;
-    button.disabled = false;
-    button.textContent = 'Save to vault';
-    cancel.textContent = 'Cancel';
-  }
-});
-
+// File input and search handlers
 $('#uploadWell').addEventListener('click', () => els.filePicker.click());
 els.filePicker.addEventListener('change', () => {
   if (els.filePicker.files.length) {
@@ -1140,7 +997,7 @@ $('#pdfNextPage')?.addEventListener('click', () => {
   }
 });
 
-// Quick action to view Baltra SHA Price List
+// Topbar Baltra Price List quick preview button
 $('#previewBaltraBtn')?.addEventListener('click', () => {
   openPreview(BALTRA_PDF_PATH);
 });
@@ -1211,5 +1068,5 @@ if ('serviceWorker' in navigator && !window.Capacitor?.isNativePlatform?.()) {
   });
 }
 
-// Initial load
+// Initial load: reads directly from localStorage and renders item cards dynamically
 load();
