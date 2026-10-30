@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+  <meta name="description" content="Organize rate lists, PDFs, and images offline.">
+  <meta name="theme-color" content="#16212f">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="RateVault">
+  <title>RateVault — Your work library</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar" id="sidebar">
+      <div class="brand"><span class="brand-mark">R</span><div><strong>RateVault</strong><small>Offline Vault</small></div></div>
+      <button class="primary full" data-action="upload"><span>＋</span> Upload files</button>
+      <nav class="main-nav" aria-label="Library filters">
+        <button class="nav-item active" data-view="all"><span>▦</span> All files <b id="allCount">0</b></button>
+        <button class="nav-item" data-view="recent"><span>◷</span> Recent</button>
+        <button class="nav-item" data-view="favorites"><span>☆</span> Favorites</button>
+        <button class="nav-item" data-view="pdf"><span>▤</span> PDFs</button>
+        <button class="nav-item" data-view="image"><span>▧</span> Images</button>
+      </nav>
+      <div class="folder-heading"><span>FOLDERS</span><button class="icon-btn small" data-action="new-folder" title="New folder">＋</button></div>
+      <div class="folder-tree" id="folderTree"></div>
+      <div class="storage-card">
+        <div class="storage-top"><span>Device storage</span><b id="storageLabel">0 B</b></div>
+        <div class="storage-note"><i></i> IndexedDB offline vault</div>
+        <small>Private • 100% on-device storage</small>
+      </div>
+    </aside>
+    <button class="sidebar-backdrop" id="sidebarBackdrop" aria-label="Close navigation"></button>
+
+    <main class="workspace">
+      <header class="topbar">
+        <button class="mobile-menu icon-btn" id="mobileMenu" aria-label="Toggle menu">☰</button>
+        <div class="search"><span aria-hidden="true">⌕</span><input id="searchInput" type="search" placeholder="Search your library" aria-label="Search files, folders, and tags"><kbd>⌘ K</kbd></div>
+        <span class="network-status hidden" id="networkStatus">Offline</span>
+        <button class="install-btn hidden" id="installButton">Install app</button>
+        <button class="help-btn" id="helpButton">?</button>
+        <div class="avatar" title="Local device vault">RV</div>
+      </header>
+
+      <section class="content">
+        <div class="breadcrumb" id="breadcrumb"></div>
+        <div class="page-heading">
+          <div><p class="eyebrow" id="eyebrow">YOUR ARCHIVE</p><h1 id="pageTitle">All files</h1><p id="pageSubtitle">Everything important, stored safely on your device.</p></div>
+          <div class="heading-actions"><button class="secondary" data-action="new-folder">New folder</button><button class="primary" data-action="upload">＋ Upload</button></div>
+        </div>
+
+        <div class="summary-strip" id="summaryStrip" aria-label="Library summary">
+          <div><span class="summary-icon amber">▤</span><p><b id="pdfCount">0</b><small>PDF documents</small></p></div>
+          <div><span class="summary-icon blue">▧</span><p><b id="imageCount">0</b><small>Rate images</small></p></div>
+          <div><span class="summary-icon coral">☆</span><p><b id="favoriteCount">0</b><small>Favorites</small></p></div>
+          <div class="activity"><small>LAST ACTIVITY</small><b id="lastActivity">No files yet</b></div>
+        </div>
+
+        <div class="toolbar">
+          <div class="result-label"><b id="resultCount">0 items</b><span id="selectionLabel"></span></div>
+          <div class="tool-controls">
+            <button class="select-mode" id="selectModeButton" data-bulk="select-visible">Select</button>
+            <select id="sortSelect" aria-label="Sort items"><option value="updated-desc">Recently updated</option><option value="name-asc">Name A–Z</option><option value="name-desc">Name Z–A</option><option value="created-desc">Newest first</option><option value="size-desc">Largest first</option></select>
+            <div class="view-toggle"><button class="active" data-layout="grid" title="Grid view">▦</button><button data-layout="list" title="List view">☷</button></div>
+          </div>
+        </div>
+
+        <div class="bulk-bar hidden" id="bulkBar" role="toolbar" aria-label="Selected item actions">
+          <div class="bulk-count"><span id="bulkCount">0</span><small>selected</small></div>
+          <div class="bulk-actions"><button data-bulk="select-visible">Select all shown</button><button data-bulk="favorite">Add to favorites</button><button data-bulk="download">Download files</button><button class="bulk-delete" data-bulk="delete">Delete selected</button><button class="bulk-clear" data-bulk="clear" aria-label="Clear selection">×</button></div>
+        </div>
+
+        <div class="drop-zone" id="dropZone"><span>↓</span><b>Drop files to add them here</b><small>PDF, JPG, PNG, WEBP or GIF</small></div>
+        <div class="items-grid" id="itemsGrid"></div>
+        <div class="empty-state hidden" id="emptyState"><div class="empty-art"><span>R</span></div><h2 id="emptyTitle">Your vault is ready</h2><p id="emptyText">Create a folder or upload your first rate list to get organized.</p><button class="primary" data-action="upload">＋ Add your first files</button></div>
+      </section>
+    </main>
+  </div>
+
+  <input id="filePicker" type="file" accept="application/pdf,image/jpeg,image/png,image/webp,image/gif" multiple hidden>
+  <div class="toast-stack" id="toastStack" aria-live="polite"></div>
+
+  <dialog id="folderDialog" class="modal compact">
+    <form method="dialog" id="folderForm">
+      <div class="modal-head"><div><small>ORGANIZE</small><h2 id="folderDialogTitle">Create a folder</h2></div><button type="button" class="close" data-close="folderDialog" aria-label="Close">×</button></div>
+      <label>Folder name<input id="folderName" maxlength="120" required placeholder="e.g. Steel suppliers"></label>
+      <fieldset><legend>Folder color</legend><div class="color-options"><label><input type="radio" name="folderColor" value="amber" checked><i class="amber"></i></label><label><input type="radio" name="folderColor" value="coral"><i class="coral"></i></label><label><input type="radio" name="folderColor" value="blue"><i class="blue"></i></label><label><input type="radio" name="folderColor" value="green"><i class="green"></i></label></div></fieldset>
+      <div class="modal-actions"><button type="button" class="ghost" data-close="folderDialog">Cancel</button><button class="primary" id="folderSubmit">Create folder</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="uploadDialog" class="modal">
+    <form method="dialog" id="uploadForm">
+      <div class="modal-head"><div><small>ADD TO VAULT</small><h2>Upload rate lists</h2></div><button type="button" class="close" data-close="uploadDialog" aria-label="Close">×</button></div>
+      <button type="button" class="upload-well" id="uploadWell"><span>↑</span><b>Choose images or PDFs</b><small>or drag and drop · stored directly on device</small></button>
+      <div id="uploadQueue" class="upload-queue"></div>
+      <label>Save to<select id="uploadFolder"></select></label>
+      <label>Tags <input id="uploadTags" placeholder="supplier, 2026, wholesale"><small>Separate tags with commas</small></label>
+      <div class="modal-actions"><button type="button" class="ghost" id="cancelUpload" data-close="uploadDialog">Cancel</button><button class="primary" id="uploadSubmit">Save to vault</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="editDialog" class="modal compact">
+    <form method="dialog" id="editForm">
+      <div class="modal-head"><div><small>FILE DETAILS</small><h2>Edit item</h2></div><button type="button" class="close" data-close="editDialog" aria-label="Close">×</button></div>
+      <label>Name<input id="editName" required maxlength="120"></label>
+      <label>Move to<select id="editFolder"></select></label>
+      <label id="editTagsWrap">Tags<input id="editTags"><small>Separate tags with commas</small></label>
+      <div class="modal-actions"><button type="button" class="ghost" data-close="editDialog">Cancel</button><button class="primary">Save changes</button></div>
+    </form>
+  </dialog>
+
+  <dialog id="previewDialog" class="preview-modal">
+    <div class="preview-head"><div><b id="previewName"></b><small id="previewMeta"></small></div><div><button type="button" class="secondary" id="previewDownload">↓ Download</button><button type="button" class="close" id="previewClose" aria-label="Close preview">×</button></div></div>
+    <div class="preview-stage" id="previewStage"></div>
+  </dialog>
+
+  <dialog id="confirmDialog" class="modal confirm compact">
+    <form method="dialog" id="confirmForm"><div class="danger-mark">!</div><h2>Delete permanently?</h2><p id="confirmText"></p><div class="modal-actions center"><button type="button" class="ghost" data-close="confirmDialog">Keep items</button><button class="danger">Delete permanently</button></div></form>
+  </dialog>
+
+  <dialog id="helpDialog" class="modal compact"><form method="dialog"><div class="modal-head"><div><small>OFFLINE VAULT</small><h2>100% On-Device Privacy</h2></div><button type="button" class="close" data-close="helpDialog" aria-label="Close">×</button></div><ul class="help-list"><li><b>Offline-First</b><span>All documents, rate lists, and folders remain securely on this device without cloud servers.</span></li><li><b>Folders</b><span>Create nested folders by opening a folder first.</span></li><li><b>Search</b><span>Find names and tags instantly. Press Ctrl/⌘ K.</span></li><li><b>Select</b><span>Select multiple items to favorite, download, or delete together.</span></li><li><b>Preview</b><span>Open an image or PDF instantly from local storage.</span></li></ul><div class="modal-actions"><button type="button" class="primary" data-close="helpDialog">Done</button></div></form></dialog>
+  <script src="app.js" defer></script>
+</body>
+</html>

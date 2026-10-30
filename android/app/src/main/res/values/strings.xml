@@ -1,0 +1,7 @@
+<?xml version='1.0' encoding='utf-8'?>
+<resources>
+    <string name="app_name">RateVault</string>
+    <string name="title_activity_main">RateVault</string>
+    <string name="package_name">com.ratevault.app</string>
+    <string name="custom_url_scheme">com.ratevault.app</string>
+</resources>

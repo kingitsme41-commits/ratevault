@@ -1,0 +1,23 @@
+{
+  "name": "ratevault",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Offline-first native mobile PWA rate-list vault",
+  "scripts": {
+    "start": "serve public -l 3000",
+    "build": "cap sync android",
+    "cap:sync": "cap sync android",
+    "cap:sync:android": "cap sync android",
+    "cap:open:android": "cap open android",
+    "cap:run:android": "cap run android"
+  },
+  "dependencies": {
+    "@capacitor/android": "^8.6.0",
+    "@capacitor/core": "^8.6.0",
+    "@capacitor/filesystem": "^8.1.5"
+  },
+  "devDependencies": {
+    "@capacitor/cli": "^8.6.0",
+    "serve": "^14.2.4"
+  }
+}
