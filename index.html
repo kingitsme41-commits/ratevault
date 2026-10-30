@@ -14,6 +14,15 @@
   <link rel="icon" href="icons/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="icons/icon-192.png">
   <link rel="stylesheet" href="styles.css">
+
+  <!-- Mozilla PDF.js Library & Worker CDN for Native Inline Mobile PDF Rendering -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js"></script>
+  <script>
+    if (window.pdfjsLib) {
+      pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+    }
+  </script>
 </head>
 <body>
   <div class="app-shell">
@@ -41,6 +50,7 @@
       <header class="topbar">
         <button class="mobile-menu icon-btn" id="mobileMenu" aria-label="Toggle menu">☰</button>
         <div class="search"><span aria-hidden="true">⌕</span><input id="searchInput" type="search" placeholder="Search your library" aria-label="Search files, folders, and tags"><kbd>⌘ K</kbd></div>
+        <button type="button" class="secondary price-list-btn" id="previewBaltraBtn" title="View Official Baltra SHA Price List">📄 Baltra Price List</button>
         <span class="network-status hidden" id="networkStatus">Offline</span>
         <button class="install-btn hidden" id="installButton">Install app</button>
         <button class="help-btn" id="helpButton">?</button>
@@ -115,16 +125,42 @@
     </form>
   </dialog>
 
+  <!-- PDF / Document Preview Modal with Mozilla PDF.js HTML5 Canvas Container -->
   <dialog id="previewDialog" class="preview-modal">
-    <div class="preview-head"><div><b id="previewName"></b><small id="previewMeta"></small></div><div><button type="button" class="secondary" id="previewDownload">↓ Download</button><button type="button" class="close" id="previewClose" aria-label="Close preview">×</button></div></div>
-    <div class="preview-stage" id="previewStage"></div>
+    <div class="preview-head">
+      <div class="preview-info">
+        <b id="previewName">BALTRA_SHA_PRICE_LIST.pdf</b>
+        <small id="previewMeta">PDF document</small>
+      </div>
+      <div class="preview-toolbar">
+        <div class="pdf-controls" id="pdfControls">
+          <button type="button" class="secondary zoom-btn" id="pdfZoomOut" title="Zoom out" aria-label="Zoom out">−</button>
+          <span id="pdfZoomLevel" class="zoom-level">100%</span>
+          <button type="button" class="secondary zoom-btn" id="pdfZoomIn" title="Zoom in" aria-label="Zoom in">+</button>
+          <div class="pdf-page-nav">
+            <button type="button" class="secondary page-btn" id="pdfPrevPage" title="Previous page" aria-label="Previous page">‹</button>
+            <span id="pdfPageInfo">1 / 1</span>
+            <button type="button" class="secondary page-btn" id="pdfNextPage" title="Next page" aria-label="Next page">›</button>
+          </div>
+        </div>
+        <button type="button" class="secondary" id="previewDownload">↓ Download</button>
+        <button type="button" class="close" id="previewClose" aria-label="Close preview">×</button>
+      </div>
+    </div>
+    <div class="preview-stage" id="previewStage">
+      <!-- HTML5 Canvas Container for Native Inline Mobile PDF Rendering -->
+      <div class="pdf-container" id="pdfContainer">
+        <canvas id="pdf-canvas"></canvas>
+      </div>
+      <img id="imagePreview" class="preview-image hidden" alt="Image preview">
+    </div>
   </dialog>
 
   <dialog id="confirmDialog" class="modal confirm compact">
     <form method="dialog" id="confirmForm"><div class="danger-mark">!</div><h2>Delete permanently?</h2><p id="confirmText"></p><div class="modal-actions center"><button type="button" class="ghost" data-close="confirmDialog">Keep items</button><button class="danger">Delete permanently</button></div></form>
   </dialog>
 
-  <dialog id="helpDialog" class="modal compact"><form method="dialog"><div class="modal-head"><div><small>OFFLINE VAULT</small><h2>100% On-Device Privacy</h2></div><button type="button" class="close" data-close="helpDialog" aria-label="Close">×</button></div><ul class="help-list"><li><b>Offline-First</b><span>All documents, rate lists, and folders remain securely on this device without cloud servers.</span></li><li><b>Folders</b><span>Create nested folders by opening a folder first.</span></li><li><b>Search</b><span>Find names and tags instantly. Press Ctrl/⌘ K.</span></li><li><b>Select</b><span>Select multiple items to favorite, download, or delete together.</span></li><li><b>Preview</b><span>Open an image or PDF instantly from local storage.</span></li></ul><div class="modal-actions"><button type="button" class="primary" data-close="helpDialog">Done</button></div></form></dialog>
+  <dialog id="helpDialog" class="modal compact"><form method="dialog"><div class="modal-head"><div><small>OFFLINE VAULT</small><h2>100% On-Device Privacy</h2></div><button type="button" class="close" data-close="helpDialog" aria-label="Close">×</button></div><ul class="help-list"><li><b>Offline-First</b><span>All documents, rate lists, and folders remain securely on this device without cloud servers.</span></li><li><b>Folders</b><span>Create nested folders by opening a folder first.</span></li><li><b>Search</b><span>Find names and tags instantly. Press Ctrl/⌘ K.</span></li><li><b>Select</b><span>Select multiple items to favorite, download, or delete together.</span></li><li><b>Native PDF.js Preview</b><span>View documents inline with zoom-in (+) and zoom-out (-) controls.</span></li></ul><div class="modal-actions"><button type="button" class="primary" data-close="helpDialog">Done</button></div></form></dialog>
   <script src="app.js" defer></script>
 </body>
 </html>

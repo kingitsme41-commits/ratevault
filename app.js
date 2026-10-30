@@ -1,5 +1,5 @@
 // RateVault — Native-Feel Offline Mobile PWA
-// 100% Client-Side Local Storage (IndexedDB) — Zero Node / Server Dependencies
+// 100% Client-Side Local Storage (IndexedDB) with Mozilla PDF.js Canvas Rendering
 
 const $ = (s, root = document) => root.querySelector(s);
 const $$ = (s, root = document) => [...root.querySelectorAll(s)];
@@ -17,6 +17,21 @@ function revokeThumbnailUrl(id) {
     blobUrlCache.delete(id);
   }
 }
+
+// PDF.js State & Constants
+const BALTRA_PDF_PATH = './BALTRA_SHA_PRICE_LIST.pdf';
+const BALTRA_PDF_NAME = 'BALTRA_SHA_PRICE_LIST.pdf';
+
+let currentPdfDoc = null;
+let currentPdfPage = 1;
+let currentPdfScale = 1.0;
+let isPdfRendering = false;
+let pendingPdfPage = null;
+let pdfRenderTask = null;
+
+const MIN_SCALE = 0.5;
+const MAX_SCALE = 3.0;
+const SCALE_STEP = 0.25;
 
 // IndexedDB Helper Functions
 function getDB() {
@@ -197,16 +212,41 @@ function toast(message, error = false) {
   setTimeout(() => el.remove(), 3200);
 }
 
+// Ensure Baltra SHA Price List item is seeded into the library
+async function ensureBaltraPriceList() {
+  const existing = state.items.find(i => i.name === BALTRA_PDF_NAME || i.id === 'baltra-sha-price-list');
+  if (!existing) {
+    const item = {
+      id: 'baltra-sha-price-list',
+      type: 'file',
+      name: BALTRA_PDF_NAME,
+      parentId: null,
+      mime: 'application/pdf',
+      size: 2615,
+      tags: ['Baltra', 'SHA', 'Price List', '2026'],
+      favorite: true,
+      createdAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString()
+    };
+    try {
+      await dbPut('items', item);
+      state.items.unshift(item);
+    } catch {}
+  }
+}
+
 // Load metadata from IndexedDB
 async function load() {
   try {
     const items = await dbGetAll('items');
     state.items = items || [];
+    await ensureBaltraPriceList();
     localStorage.setItem('rv-metadata', JSON.stringify(state.items));
     render();
   } catch (e) {
     try {
       state.items = JSON.parse(localStorage.getItem('rv-metadata') || '[]');
+      await ensureBaltraPriceList();
       render();
       toast('Showing your cached view');
     } catch {
@@ -418,38 +458,269 @@ function openEdit(id) {
   els.editDialog.showModal();
 }
 
-async function openPreview(id) {
-  const item = state.items.find(i => i.id === id && i.type === 'file');
-  if (!item) return;
-  $('#previewName').textContent = item.name;
-  $('#previewMeta').textContent = `${item.mime === 'application/pdf' || item.name.toLowerCase().endsWith('.pdf') ? 'PDF document' : 'Image'} · ${formatBytes(item.size)}`;
+// -------------------------------------------------------------
+// Mozilla PDF.js Inline Mobile Rendering & Zoom Controls
+// -------------------------------------------------------------
 
-  let url = blobUrlCache.get(id);
-  if (!url) {
-    const fileRecord = await dbGet('files', id);
-    if (fileRecord && fileRecord.blob) {
-      url = URL.createObjectURL(fileRecord.blob);
-      blobUrlCache.set(id, url);
+async function renderPdfPage(pageNum) {
+  if (!currentPdfDoc) return;
+  if (isPdfRendering) {
+    pendingPdfPage = pageNum;
+    if (pdfRenderTask) {
+      try { pdfRenderTask.cancel(); } catch {}
+    }
+    return;
+  }
+  isPdfRendering = true;
+
+  try {
+    const page = await currentPdfDoc.getPage(pageNum);
+    const canvas = document.getElementById('pdf-canvas');
+    if (!canvas) {
+      isPdfRendering = false;
+      return;
+    }
+    const ctx = canvas.getContext('2d');
+
+    // Handle high DPI displays for crisp rendering on mobile devices
+    const dpr = window.devicePixelRatio || 1;
+    const viewport = page.getViewport({ scale: currentPdfScale });
+
+    canvas.width = Math.floor(viewport.width * dpr);
+    canvas.height = Math.floor(viewport.height * dpr);
+    canvas.style.width = `${Math.floor(viewport.width)}px`;
+    canvas.style.height = `${Math.floor(viewport.height)}px`;
+
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+
+    const renderContext = {
+      canvasContext: ctx,
+      viewport: viewport
+    };
+
+    pdfRenderTask = page.render(renderContext);
+    await pdfRenderTask.promise;
+    isPdfRendering = false;
+
+    // Update UI controls and page status
+    const zoomLevelEl = document.getElementById('pdfZoomLevel');
+    if (zoomLevelEl) zoomLevelEl.textContent = `${Math.round(currentPdfScale * 100)}%`;
+
+    const pageInfoEl = document.getElementById('pdfPageInfo');
+    if (pageInfoEl) pageInfoEl.textContent = `${pageNum} / ${currentPdfDoc.numPages}`;
+
+    const prevBtn = document.getElementById('pdfPrevPage');
+    if (prevBtn) prevBtn.disabled = pageNum <= 1;
+
+    const nextBtn = document.getElementById('pdfNextPage');
+    if (nextBtn) nextBtn.disabled = pageNum >= currentPdfDoc.numPages;
+
+    if (pendingPdfPage !== null) {
+      const next = pendingPdfPage;
+      pendingPdfPage = null;
+      renderPdfPage(next);
+    }
+  } catch (err) {
+    if (err?.name !== 'RenderingCancelledException') {
+      console.error('PDF.js render error:', err);
+    }
+    isPdfRendering = false;
+  }
+}
+
+// Zoom in (+) event handler
+function zoomInPdf() {
+  if (!currentPdfDoc || currentPdfScale >= MAX_SCALE) return;
+  currentPdfScale = Math.min(MAX_SCALE, Math.round((currentPdfScale + SCALE_STEP) * 100) / 100);
+  renderPdfPage(currentPdfPage);
+}
+
+// Zoom out (-) event handler
+function zoomOutPdf() {
+  if (!currentPdfDoc || currentPdfScale <= MIN_SCALE) return;
+  currentPdfScale = Math.max(MIN_SCALE, Math.round((currentPdfScale - SCALE_STEP) * 100) / 100);
+  renderPdfPage(currentPdfPage);
+}
+
+async function loadPdfDocument(source) {
+  if (typeof window === 'undefined' || !window.pdfjsLib) {
+    throw new Error('PDF.js library is not loaded');
+  }
+
+  // Configure worker
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+
+  let loadingTask;
+  if (typeof source === 'string') {
+    loadingTask = window.pdfjsLib.getDocument(source);
+  } else if (source instanceof Blob) {
+    const arrayBuffer = await source.arrayBuffer();
+    loadingTask = window.pdfjsLib.getDocument({ data: arrayBuffer });
+  } else if (source instanceof ArrayBuffer) {
+    loadingTask = window.pdfjsLib.getDocument({ data: source });
+  } else {
+    loadingTask = window.pdfjsLib.getDocument(source);
+  }
+
+  currentPdfDoc = await loadingTask.promise;
+  currentPdfPage = 1;
+
+  // Auto-calculate scale to fit container width cleanly on mobile
+  const firstPage = await currentPdfDoc.getPage(1);
+  const unscaled = firstPage.getViewport({ scale: 1.0 });
+  const container = document.getElementById('pdfContainer') || document.getElementById('previewStage');
+  const availableWidth = container ? container.clientWidth - 32 : window.innerWidth - 32;
+  if (unscaled.width > 0 && availableWidth > 0) {
+    const fitRatio = availableWidth / unscaled.width;
+    currentPdfScale = Math.max(0.6, Math.min(1.5, Math.round(fitRatio * 100) / 100));
+  } else {
+    currentPdfScale = 1.0;
+  }
+
+  await renderPdfPage(currentPdfPage);
+}
+
+// Preview Dialog Opener: Handles images and native PDF.js canvas rendering
+async function openPreview(id) {
+  const isBaltraRequest = !id || id === BALTRA_PDF_PATH || id === BALTRA_PDF_NAME || id === 'baltra-sha-price-list';
+
+  let item = null;
+  let isPdf = false;
+  let pdfSource = null;
+
+  const pdfControls = $('#pdfControls');
+  const pdfContainer = $('#pdfContainer');
+  const imagePreview = $('#imagePreview');
+
+  if (isBaltraRequest) {
+    isPdf = true;
+    pdfSource = BALTRA_PDF_PATH;
+    $('#previewName').textContent = BALTRA_PDF_NAME;
+    $('#previewMeta').textContent = 'PDF document · Official Price List';
+    $('#previewDownload').onclick = () => {
+      const a = document.createElement('a');
+      a.href = BALTRA_PDF_PATH;
+      a.download = BALTRA_PDF_NAME;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    };
+  } else {
+    item = state.items.find(i => i.id === id && i.type === 'file');
+    if (!item) {
+      if (typeof id === 'string' && id.toLowerCase().endsWith('.pdf')) {
+        isPdf = true;
+        pdfSource = id;
+        const filename = id.split('/').pop();
+        $('#previewName').textContent = filename;
+        $('#previewMeta').textContent = 'PDF document';
+        $('#previewDownload').onclick = () => {
+          const a = document.createElement('a');
+          a.href = id;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+        };
+      } else {
+        return;
+      }
+    } else {
+      $('#previewName').textContent = item.name;
+      isPdf = item.mime === 'application/pdf' || item.name.toLowerCase().endsWith('.pdf');
+      $('#previewMeta').textContent = `${isPdf ? 'PDF document' : 'Image'} · ${formatBytes(item.size)}`;
+      $('#previewDownload').onclick = () => download(item.id);
+
+      if (isPdf) {
+        if (item.name === BALTRA_PDF_NAME || item.name.toLowerCase().includes('baltra')) {
+          pdfSource = BALTRA_PDF_PATH;
+        } else {
+          const fileRecord = await dbGet('files', item.id);
+          if (fileRecord?.blob) {
+            pdfSource = fileRecord.blob;
+          } else {
+            pdfSource = blobUrlCache.get(item.id) || BALTRA_PDF_PATH;
+          }
+        }
+      }
     }
   }
 
-  if (!url) {
-    toast('Could not load file preview', true);
-    return;
-  }
+  if (isPdf) {
+    imagePreview.classList.add('hidden');
+    pdfContainer.classList.remove('hidden');
+    pdfControls.classList.remove('hidden');
+    els.previewDialog.showModal();
 
-  if (isImage(item)) {
-    $('#previewStage').innerHTML = `<img src="${url}" alt="${escapeHtml(item.name)}">`;
+    try {
+      await loadPdfDocument(pdfSource);
+    } catch (err) {
+      toast('Failed to load PDF preview: ' + err.message, true);
+    }
   } else {
-    $('#previewStage').innerHTML = `<iframe title="${escapeHtml(item.name)}" src="${url}"></iframe>`;
+    pdfContainer.classList.add('hidden');
+    pdfControls.classList.add('hidden');
+    imagePreview.classList.remove('hidden');
+
+    let url = blobUrlCache.get(item.id);
+    if (!url) {
+      const fileRecord = await dbGet('files', item.id);
+      if (fileRecord && fileRecord.blob) {
+        url = URL.createObjectURL(fileRecord.blob);
+        blobUrlCache.set(item.id, url);
+      }
+    }
+    if (!url) {
+      toast('Could not load image preview', true);
+      return;
+    }
+    imagePreview.src = url;
+    imagePreview.alt = item.name;
+    els.previewDialog.showModal();
   }
-  $('#previewDownload').onclick = () => download(item.id);
-  els.previewDialog.showModal();
+}
+
+function closePreview() {
+  if (pdfRenderTask) {
+    try { pdfRenderTask.cancel(); } catch {}
+  }
+  isPdfRendering = false;
+  pendingPdfPage = null;
+  currentPdfDoc = null;
+  const canvas = document.getElementById('pdf-canvas');
+  if (canvas) {
+    const ctx = canvas.getContext('2d');
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+  }
+  if (els.previewDialog.open) {
+    els.previewDialog.close();
+  }
 }
 
 async function download(id) {
+  if (id === 'baltra-sha-price-list' || id === BALTRA_PDF_NAME || id === BALTRA_PDF_PATH) {
+    const a = document.createElement('a');
+    a.href = BALTRA_PDF_PATH;
+    a.download = BALTRA_PDF_NAME;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    return;
+  }
+
   const item = state.items.find(i => i.id === id && i.type === 'file');
   if (!item) return;
+
+  if (item.name === BALTRA_PDF_NAME || item.name.toLowerCase().includes('baltra')) {
+    const a = document.createElement('a');
+    a.href = BALTRA_PDF_PATH;
+    a.download = BALTRA_PDF_NAME;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    return;
+  }
+
   let url = blobUrlCache.get(id);
   if (!url) {
     const fileRecord = await dbGet('files', id);
@@ -543,6 +814,7 @@ document.addEventListener('click', e => {
   const closeId = e.target.closest('[data-close]')?.dataset.close;
   if (closeId) {
     if (closeId === 'uploadDialog') cancelUploadDialog();
+    else if (closeId === 'previewDialog') closePreview();
     else document.getElementById(closeId)?.close();
     return;
   }
@@ -838,12 +1110,41 @@ document.addEventListener('keydown', e => {
     e.preventDefault();
     els.search.focus();
   }
-  if (e.key === 'Escape') $('#sidebar').classList.remove('open');
+  if (e.key === 'Escape') {
+    $('#sidebar').classList.remove('open');
+    if (els.previewDialog.open) closePreview();
+  }
 });
 
 $('#mobileMenu').addEventListener('click', () => $('#sidebar').classList.toggle('open'));
 $('#helpButton').addEventListener('click', () => $('#helpDialog').showModal());
-$('#previewClose').addEventListener('click', () => els.previewDialog.close());
+$('#previewClose').addEventListener('click', closePreview);
+els.previewDialog.addEventListener('cancel', e => {
+  e.preventDefault();
+  closePreview();
+});
+
+// PDF.js Zoom & Page Control Listeners
+$('#pdfZoomIn')?.addEventListener('click', zoomInPdf);
+$('#pdfZoomOut')?.addEventListener('click', zoomOutPdf);
+$('#pdfPrevPage')?.addEventListener('click', () => {
+  if (currentPdfDoc && currentPdfPage > 1) {
+    currentPdfPage--;
+    renderPdfPage(currentPdfPage);
+  }
+});
+$('#pdfNextPage')?.addEventListener('click', () => {
+  if (currentPdfDoc && currentPdfPage < currentPdfDoc.numPages) {
+    currentPdfPage++;
+    renderPdfPage(currentPdfPage);
+  }
+});
+
+// Quick action to view Baltra SHA Price List
+$('#previewBaltraBtn')?.addEventListener('click', () => {
+  openPreview(BALTRA_PDF_PATH);
+});
+
 $('#sidebarBackdrop').addEventListener('click', () => $('#sidebar').classList.remove('open'));
 els.uploadDialog.addEventListener('cancel', e => {
   e.preventDefault();

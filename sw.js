@@ -1,4 +1,4 @@
-const VERSION = 'ratevault-v4';
+const VERSION = 'ratevault-v5';
 const SHELL = `${VERSION}-shell`;
 const APP_FILES = [
   './',
@@ -8,7 +8,8 @@ const APP_FILES = [
   './manifest.webmanifest',
   './icons/icon.svg',
   './icons/icon-192.png',
-  './icons/icon-512.png'
+  './icons/icon-512.png',
+  './BALTRA_SHA_PRICE_LIST.pdf'
 ];
 
 self.addEventListener('install', event => {
@@ -31,16 +32,21 @@ self.addEventListener('fetch', event => {
   const { request } = event;
   const url = new URL(request.url);
 
-  // Only handle GET requests with http/https schemes on the same origin
+  // Only handle GET requests with http/https schemes
   if (request.method !== 'GET' || !url.protocol.startsWith('http')) return;
 
-  // Cache-first strategy for app shell assets
+  // Handle same origin and CDN assets (such as PDF.js)
+  const isSameOrigin = url.origin === location.origin;
+  const isCdn = url.hostname.includes('cdnjs.cloudflare.com');
+  if (!isSameOrigin && !isCdn) return;
+
+  // Cache-first strategy for app shell assets and PDF.js
   event.respondWith(
     caches.match(request).then(cachedResponse => {
       if (cachedResponse) {
         // Fetch in background to keep cache fresh
         fetch(request).then(networkResponse => {
-          if (networkResponse && networkResponse.status === 200 && networkResponse.type === 'basic') {
+          if (networkResponse && networkResponse.status === 200) {
             caches.open(SHELL).then(cache => cache.put(request, networkResponse));
           }
         }).catch(() => {});
@@ -48,7 +54,7 @@ self.addEventListener('fetch', event => {
       }
 
       return fetch(request).then(networkResponse => {
-        if (!networkResponse || networkResponse.status !== 200 || networkResponse.type !== 'basic') {
+        if (!networkResponse || networkResponse.status !== 200) {
           return networkResponse;
         }
         const responseToCache = networkResponse.clone();
